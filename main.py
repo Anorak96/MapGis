@@ -5,10 +5,10 @@ import threading
 import rasterio
 from rasterio.transform import from_origin
 import folium
-from PyQt6.QtWidgets import QApplication, QMainWindow, QVBoxLayout, QPushButton, QWidget, QFileDialog, QLabel, QHBoxLayout, QCheckBox, QListWidget, QTableWidget
+from PyQt6.QtWidgets import QApplication, QMainWindow, QVBoxLayout, QPushButton, QWidget, QFileDialog, QLabel, QHBoxLayout, QCheckBox, QListWidget, QTableWidget, QTableWidgetItem, QToolBar, QDialog, QDialogButtonBox, QTabWidget, QPushButton, QMessageBox
 from PyQt6.QtWebEngineWidgets import QWebEngineView
-from PyQt6.QtGui import QAction
-from PyQt6.QtCore import QUrl
+from PyQt6.QtGui import QAction, QIcon
+from PyQt6.QtCore import QUrl, QSize
 import os
 os.environ["QT_OPENGL"] = "software"
 # os.environ["QTWEBENGINE_DISABLE_GPU"] = "0"
@@ -17,16 +17,17 @@ os.environ["QTWEBENGINE_CHROMIUM_FLAGS"] = "--disable-gpu"
 class GISApp(QMainWindow):
     def __init__(self):
         super().__init__()
-
-        self.setStyleSheet(
-            """
-            Qlabel, QMainWindow {
-                background-color: #f0f0f0;
-            }
-            """
-        )
         self.setWindowTitle("GIS Application")
         self.setGeometry(100, 100, 800, 600)
+
+        self.setStyleSheet('''
+            QMainWindow{
+                background-color: #f0f0f0;
+            }
+            QWidget{
+                backgound-color: #f0f0f0;
+            }
+        ''')
 
         self.central_widget = QWidget()
         self.setCentralWidget(self.central_widget)
@@ -54,7 +55,7 @@ class GISApp(QMainWindow):
         self.right_list_widget.setFixedWidth(160)
         self.main_layout.addWidget(self.right_list_widget)
 
-        self.table_widget = QTableWidget()
+        self.table_widget = QTableWidget(self)
         self.table_widget.setColumnCount(6)
         # self.table_widget.setHorizontalHeaderlabels()
         self.right_list.addWidget(self.table_widget)
@@ -68,6 +69,8 @@ class GISApp(QMainWindow):
         self.geodata = None  # Placeholder for GeoDataFrame
 
         self.create_menu_bar()
+        self.create_tool_bar()
+        self.status_bar = self.statusBar()
 
     def create_menu_bar(self):
         # Create a menu bar
@@ -78,8 +81,9 @@ class GISApp(QMainWindow):
         edit_menu = menubar.addMenu('Edit')
         view_menu = menubar.addMenu('View')
         help_menu = menubar.addMenu('Help')
+        geop_menu = menubar.addMenu('GeoProcessing')
 
-        # Create actions using QAction
+        # Create file actions using QAction
         load_action = QAction('Load Data', self)
         load_action.setShortcut('Ctrl+L')  # Optional: Set shortcut
         load_action.triggered.connect(self.load_data)  # Connect action to function
@@ -89,17 +93,65 @@ class GISApp(QMainWindow):
         add_layer_action = QAction('Add Layer', self)
         add_layer_action.triggered.connect(self.create_layer)  # Connect action to function
         file_menu.addAction(add_layer_action)
+        file_menu.addSeparator()
         quit_action = QAction('Quit', self)
         quit_action.setShortcut('Ctrl+Q')  # Optional: Set shortcut
         quit_action.triggered.connect(self.close)  # Connect action to quit the app
         file_menu.addAction(quit_action)
 
+        # Create view actions using QAction
         table_action = QAction('Attribute Table', self)
         table_action.triggered.connect(self.attribute_table)  # Connect action to function
         view_menu.addAction(table_action)
+
+        # Create edit actions using QAction
+        undo_action = QAction(QIcon('undo.png'), '&Undo', self)
+        undo_action.setStatusTip('Undo')
+        undo_action.setShortcut('Ctrl+Z')
+        # undo_action.triggered.connect(self.text_edit.undo)
+        edit_menu.addAction(undo_action)
+
+        redo_action = QAction(QIcon('redo.png'), '&Redo', self)
+        redo_action.setStatusTip('Redo')
+        redo_action.setShortcut('Ctrl+Y')
+        # redo_action.triggered.connect(self.text_edit.redo)
+        edit_menu.addAction(redo_action)
+        
+        edit_menu.addSeparator()
         
         paste_action = QAction('Paste', self)
         edit_menu.addAction(paste_action)
+        edit_menu.addSeparator()
+
+        # Create Geop actions using QAction
+        buffer = QAction('Buffer', self)
+        buffer.triggered.connect(self.buffer_data)
+        geop_menu.addAction(buffer)
+        clip = QAction('Clip', self)
+        geop_menu.addAction(clip)
+        union = QAction('Union', self)
+        geop_menu.addAction(union)
+
+    def create_tool_bar(self):
+        toolbar = QToolBar("My main toolbar")
+        self.addToolBar(toolbar)
+        toolbar.setIconSize(QSize(16, 16))
+
+        new_button = QAction(QIcon("new-text.png"), "New File", self)
+        # button_action.triggered.connect(self.onMyToolBarButtonClick)
+        toolbar.addAction(new_button)
+
+        paste_button = QAction(QIcon("paste.png"), "Paste", self)
+        # button_action.triggered.connect(self.onMyToolBarButtonClick)
+        toolbar.addAction(paste_button)
+
+        copy_button = QAction(QIcon("copy.png"), "Paste", self)
+        # button_action.triggered.connect(self.onMyToolBarButtonClick)
+        toolbar.addAction(copy_button)
+
+        cut_button = QAction(QIcon("cut.png"), "Paste", self)
+        # button_action.triggered.connect(self.onMyToolBarButtonClick)
+        toolbar.addAction(cut_button)
         
     def load_data(self):
         file_name, _ = QFileDialog.getOpenFileName(
@@ -112,10 +164,18 @@ class GISApp(QMainWindow):
         if file_name:
             self.geodata = gpd.read_file(file_name)
             self.display_map()
+            
     def save_data(self):
         dir_path = QFileDialog.getExistingDirectory(self, "Select Directory")
         if dir_path:
             folder_path = os.path.join(dir_path, 'Saved')
+            
+    def buffer_data(self):
+        dlg = QMessageBox()
+        dlg.setWindowTitle("Buffer")
+        dlg.setStandardButtons(QMessageBox.StandardButton.Ok | QMessageBox.StandardButton.Cancel)
+        dlg.exec()
+        
     def display_map(self):
         # self.label = QLabel("Map")
         if self.geodata is not None and not self.geodata.empty:
@@ -206,7 +266,7 @@ class GISApp(QMainWindow):
             print(f"Layer '{layer_name}' not found.")
 
     def attribute_table(self):
-        file = QFileDialog.getOpenFileName(self, "open tiff file", "", "Shp Files (*.shp)")
+        file = QFileDialog.getOpenFileName(self, "open csv file", "", "csv Files (*.csv)")
         table = gpd.read_file(file)
         table.head()
 
