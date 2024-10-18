@@ -6,7 +6,7 @@ import threading
 import rasterio
 from rasterio.transform import from_origin
 import folium
-from PyQt6.QtWidgets import QApplication, QMainWindow, QVBoxLayout, QPushButton, QWidget, QFileDialog, QLabel, QHBoxLayout, QCheckBox, QListWidget, QTableWidget, QTableWidgetItem, QToolBar, QDialog, QDialogButtonBox, QTabWidget, QPushButton, QMessageBox, QTextEdit
+from PyQt6.QtWidgets import QApplication, QMainWindow, QVBoxLayout, QPushButton, QWidget, QFileDialog, QLabel, QHBoxLayout, QCheckBox, QListWidget, QTableWidget, QTableWidgetItem, QToolBar, QDialog, QDialogButtonBox, QTabWidget, QPushButton, QMessageBox, QTextEdit, QInputDialog
 from PyQt6.QtWebEngineWidgets import QWebEngineView
 from PyQt6.QtGui import QAction, QIcon
 from PyQt6.QtCore import QUrl, QSize
@@ -132,9 +132,12 @@ class GISApp(QMainWindow):
         buffer = QAction('Buffer', self)
         buffer.triggered.connect(self.buffer_data)
         geop_menu.addAction(buffer)
+
         clip = QAction('Clip', self)
         geop_menu.addAction(clip)
+
         union = QAction('Union', self)
+        union.triggered.connect(self.union_data)
         geop_menu.addAction(union)
 
     def create_tool_bar(self):
@@ -190,13 +193,27 @@ class GISApp(QMainWindow):
         self.set_title(filename)
             
     def buffer_data(self):
-        dlg = QMessageBox()
-        dlg.setWindowTitle("Buffer")
-        dlg.setStandardButtons(QMessageBox.StandardButton.Ok | QMessageBox.StandardButton.Cancel)
-        dlg.exec()
+        try:
+            distance, ok = QInputDialog.getDouble(self, 'Buffer', 'Enter buffer distance:', min=0)
+            if ok and self.geodata is not None:
+                buffered = self.geodata.buffer(distance)
+                self.geodata.geometry = buffered
+                self.display_map()
+        except Exception as e:
+            QMessageBox.critical(self, "Error", f"Buffer operation failed: {e}")
+
+    def union_data(self):
+        try:
+            if self.geodata is not None:
+                unioned = self.geodata.unary_union
+                unioned_geodata = gpd.GeoDataFrame(geometry=[unioned])
+                self.geodata = unioned_geodata
+                self.display_map()
+
+        except Exception as e:
+            QMessageBox.critical(self, "Error", f"Union operation failed: {e}")
         
     def display_map(self):
-        # self.label = QLabel("Map")
         if self.geodata is not None and not self.geodata.empty:
             # Create a Folium map centered around the data's centroid
             combined_geometry = gpd.GeoSeries(self.geodata.geometry).union_all()
@@ -207,8 +224,6 @@ class GISApp(QMainWindow):
             # Add GeoData to the map
             geo_layer = folium.GeoJson(self.geodata, name='Geodata')
             geo_layer.add_to(self.m)
-
-            # folium.LayerControl().add_to(self.m)
 
             self.add_layer_checkbox("Geo_Layer", geo_layer)
 
@@ -222,11 +237,7 @@ class GISApp(QMainWindow):
     def create_layer(self):
         tif_file , _ = QFileDialog.getOpenFileName(self, "open tiff file", "", "TIFF Files (*.tif *.tiff)")
         if tif_file:
-            try:
-                if self.m is None:
-                    print("no map. load a shapefile.")
-                    return
-                
+            try:                
                 with rasterio.open(tif_file) as src:
                     bounds = src.bounds
 
@@ -249,7 +260,7 @@ class GISApp(QMainWindow):
                     # Load the HTML file in the QWebEngineView
                     self.web_view.setUrl(QUrl("http://localhost:8000/map.html"))
             except Exception as e:
-                print(f"Error loading TIFF file: {e}")
+                QMessageBox.critical(self, "Error", f"Error loading TIFF file: {e}")
 
     def add_layer_checkbox(self, layer_name, layer_object, file_name=None):
         label_text = layer_name
@@ -262,32 +273,47 @@ class GISApp(QMainWindow):
         self.layer_checboxes[layer_name] = checkbox
         self.layers[layer_name] = layer_object  # Store layer reference
 
-        checkbox.stateChanged.connect(lambda state: self.toggle_layer(state, checkbox.text()))
+        checkbox.stateChanged.connect(lambda state: self.toggle_layer(state, layer_name))
 
     def toggle_layer(self, state, layer_name):
-        if layer_name in self.layers:
-            layer = self.layers[layer_name]
-
+        layer = self.layers.get(QHBoxLayout)
+        if layer:
             if state == 0:
-                # Uncheck means to remove the layer
-                if layer in self.m._children:
-                    self.m._children.remove(layer)  # Remove layer from the map
+                layer.remove_from(self.m)
             else:
-                # Check means to add the layer back
-                if layer not in self.m._children:
-                    layer.add_to(self.m)
-
-            # Save the map and reload in the web view
-            map_file = "map.html"
-            self.m.save(map_file)
+                layer.add_to(self.m)
+            
+            self.m.save("map.html")
             self.web_view.setUrl(QUrl("http://localhost:8000/map.html"))
         else:
-            print(f"Layer '{layer_name}' not found.")
+            QMessageBox.warning(self, "Error", f"Layer '{layer_name}' not found")
+
+        # if layer_name in self.layers:
+        #     layer = self.layers[layer_name]
+
+        #     if state == 0:
+        #         # Uncheck means to remove the layer
+        #         if layer in self.m._children:
+        #             self.m._children.remove(layer)  # Remove layer from the map
+        #     else:
+        #         # Check means to add the layer back
+        #         if layer not in self.m._children:
+        #             layer.add_to(self.m)
+
+        #     # Save the map and reload in the web view
+        #     map_file = "map.html"
+        #     self.m.save(map_file)
+        #     self.web_view.setUrl(QUrl("http://localhost:8000/map.html"))
+        # else:
+        #     print(f"Layer '{layer_name}' not found.")
 
     def attribute_table(self):
-        file = QFileDialog.getOpenFileName(self, "open csv file", "", "csv Files (*.csv)")
-        table = gpd.read_file(file)
-        table.head()
+        file, _ = QFileDialog.getOpenFileName(self, "open csv file", "", "csv Files (*.csv)")
+        if file:
+            try:
+                pass
+            except Exception as e:
+                QMessageBox.critical(self, "Error", f"Falied to load csv file")
 
 def run_local_server():
     htttd = HTTPServer(('localhost', 8000), SimpleHTTPRequestHandler)
