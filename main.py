@@ -1,11 +1,12 @@
 import sys
+from pathlib import Path
 import geopandas as gpd
 from http.server import SimpleHTTPRequestHandler, HTTPServer
 import threading
 import rasterio
 from rasterio.transform import from_origin
 import folium
-from PyQt6.QtWidgets import QApplication, QMainWindow, QVBoxLayout, QPushButton, QWidget, QFileDialog, QLabel, QHBoxLayout, QCheckBox, QListWidget, QTableWidget, QTableWidgetItem, QToolBar, QDialog, QDialogButtonBox, QTabWidget, QPushButton, QMessageBox
+from PyQt6.QtWidgets import QApplication, QMainWindow, QVBoxLayout, QPushButton, QWidget, QFileDialog, QLabel, QHBoxLayout, QCheckBox, QListWidget, QTableWidget, QTableWidgetItem, QToolBar, QDialog, QDialogButtonBox, QTabWidget, QPushButton, QMessageBox, QTextEdit
 from PyQt6.QtWebEngineWidgets import QWebEngineView
 from PyQt6.QtGui import QAction, QIcon
 from PyQt6.QtCore import QUrl, QSize
@@ -20,17 +21,11 @@ class GISApp(QMainWindow):
         self.setWindowTitle("GIS Application")
         self.setGeometry(100, 100, 800, 600)
 
-        self.setStyleSheet('''
-            QMainWindow{
-                background-color: #f0f0f0;
-            }
-            QWidget{
-                backgound-color: #f0f0f0;
-            }
-        ''')
-
         self.central_widget = QWidget()
         self.setCentralWidget(self.central_widget)
+
+        self.path = None
+        self.filters = 'Shp Files (*.shp)'
 
         self.main_layout = QHBoxLayout(self.central_widget)
 
@@ -47,7 +42,8 @@ class GISApp(QMainWindow):
         self.layers = {}
 
         # Create a QWebEngineView to display the Folium map
-        self.web_view = QWebEngineView()
+        self.web_view_widget = QWidget()
+        self.web_view = QWebEngineView(self.web_view_widget)
         self.main_layout.addWidget(self.web_view)
 
         self.right_list_widget = QWidget()
@@ -57,7 +53,6 @@ class GISApp(QMainWindow):
 
         self.table_widget = QTableWidget(self)
         self.table_widget.setColumnCount(6)
-        # self.table_widget.setHorizontalHeaderlabels()
         self.right_list.addWidget(self.table_widget)
         
         self.main_layout.setStretch(0, 1)  # Stretch factor for the layer_list layout
@@ -84,18 +79,30 @@ class GISApp(QMainWindow):
         geop_menu = menubar.addMenu('GeoProcessing')
 
         # Create file actions using QAction
+        new_action = QAction(QIcon("fugue-icons-3.5.6/icons/new-text.png"), 'New File', self)
+        new_action.setShortcut('Ctrl+N') 
+        file_menu.addAction(new_action)
+
+        file_menu.addSeparator()
+
         load_action = QAction('Load Data', self)
         load_action.setShortcut('Ctrl+L')  # Optional: Set shortcut
         load_action.triggered.connect(self.load_data)  # Connect action to function
-        save_action = QAction('Save', self)
-        save_action.triggered.connect(self.save_data)
         file_menu.addAction(load_action)
+        
+        save_action = QAction('Save', self)
+        save_action.setShortcut('Ctrl+S') 
+        save_action.triggered.connect(self.save_data)
+        file_menu.addAction(save_action)
+
         add_layer_action = QAction('Add Layer', self)
         add_layer_action.triggered.connect(self.create_layer)  # Connect action to function
         file_menu.addAction(add_layer_action)
+        
         file_menu.addSeparator()
+
         quit_action = QAction('Quit', self)
-        quit_action.setShortcut('Ctrl+Q')  # Optional: Set shortcut
+        quit_action.setShortcut('Alt+F4')  # Optional: Set shortcut
         quit_action.triggered.connect(self.close)  # Connect action to quit the app
         file_menu.addAction(quit_action)
 
@@ -105,16 +112,14 @@ class GISApp(QMainWindow):
         view_menu.addAction(table_action)
 
         # Create edit actions using QAction
-        undo_action = QAction(QIcon('undo.png'), '&Undo', self)
+        undo_action = QAction(QIcon('fugue-icons-3.5.6/icons/arrow-return-180.png'), '&Undo', self)
         undo_action.setStatusTip('Undo')
         undo_action.setShortcut('Ctrl+Z')
-        # undo_action.triggered.connect(self.text_edit.undo)
         edit_menu.addAction(undo_action)
 
-        redo_action = QAction(QIcon('redo.png'), '&Redo', self)
+        redo_action = QAction(QIcon('fugue-icons-3.5.6/icons/arrow-return.png'), '&Redo', self)
         redo_action.setStatusTip('Redo')
         redo_action.setShortcut('Ctrl+Y')
-        # redo_action.triggered.connect(self.text_edit.redo)
         edit_menu.addAction(redo_action)
         
         edit_menu.addSeparator()
@@ -137,19 +142,19 @@ class GISApp(QMainWindow):
         self.addToolBar(toolbar)
         toolbar.setIconSize(QSize(16, 16))
 
-        new_button = QAction(QIcon("new-text.png"), "New File", self)
+        new_button = QAction(QIcon("fugue-icons-3.5.6/icons/new-text.png"), "New File", self)
         # button_action.triggered.connect(self.onMyToolBarButtonClick)
         toolbar.addAction(new_button)
 
-        paste_button = QAction(QIcon("paste.png"), "Paste", self)
+        paste_button = QAction(QIcon("fugue-icons-3.5.6/icons/clipboard-paste.png"), "Paste", self)
         # button_action.triggered.connect(self.onMyToolBarButtonClick)
         toolbar.addAction(paste_button)
 
-        copy_button = QAction(QIcon("copy.png"), "Paste", self)
+        copy_button = QAction(QIcon("fugue-icons-3.5.6/icons/document-copy.png"), "Copy", self)
         # button_action.triggered.connect(self.onMyToolBarButtonClick)
         toolbar.addAction(copy_button)
 
-        cut_button = QAction(QIcon("cut.png"), "Paste", self)
+        cut_button = QAction(QIcon("fugue-icons-3.5.6/icons/scissors.png"), "Cut", self)
         # button_action.triggered.connect(self.onMyToolBarButtonClick)
         toolbar.addAction(cut_button)
         
@@ -164,11 +169,25 @@ class GISApp(QMainWindow):
         if file_name:
             self.geodata = gpd.read_file(file_name)
             self.display_map()
-            
+    
+    def set_title(self, filename=None):
+        title = f"{filename if filename else 'Untitled'}"
+        self.setWindowTitle(title)
+
     def save_data(self):
-        dir_path = QFileDialog.getExistingDirectory(self, "Select Directory")
-        if dir_path:
-            folder_path = os.path.join(dir_path, 'Saved')
+        text_edit = QTextEdit()
+
+        if (self.path):
+            return self.path.write_text(text_edit.toPlainText())
+        
+        filename, _ = QFileDialog.getSaveFileName(self, 'Save File', filter=self.filters)
+
+        if not filename:
+            return
+        
+        self.path = Path(filename)
+        self.path.write_text(text_edit.toPlainText())
+        self.set_title(filename)
             
     def buffer_data(self):
         dlg = QMessageBox()
