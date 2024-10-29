@@ -1,7 +1,6 @@
 import sys
 from pathlib import Path
 import folium.raster_layers
-from folium.plugins import GroupedLayerControl
 import pandas as pd
 import json
 import io
@@ -9,10 +8,9 @@ import geopandas as gpd
 from http.server import SimpleHTTPRequestHandler, HTTPServer
 import threading
 import rasterio
-from rasterio.transform import from_origin
 import folium
 from folium.plugins import Draw, MousePosition
-from PyQt6.QtWidgets import QApplication, QMainWindow, QVBoxLayout, QPushButton, QWidget, QFileDialog, QLabel, QHBoxLayout, QCheckBox, QListWidget, QTableWidget, QTableWidgetItem, QToolBar, QDialog, QDialogButtonBox, QTabWidget, QPushButton, QMessageBox, QTextEdit, QInputDialog, QComboBox
+from PyQt6.QtWidgets import QApplication, QMainWindow, QVBoxLayout, QPushButton, QWidget, QFileDialog, QLabel, QHBoxLayout, QCheckBox, QListWidget, QTableWidget, QToolBar, QDialog, QTabWidget, QPushButton, QMessageBox, QTextEdit, QInputDialog, QComboBox
 from PyQt6.QtWebEngineWidgets import QWebEngineView
 from PyQt6.QtGui import QAction, QIcon
 from PyQt6.QtCore import QUrl, QSize, Qt
@@ -23,16 +21,14 @@ os.environ["QTWEBENGINE_DISABLE_GPU"] = "0"
 os.environ["QTWEBENGINE_CHROMIUM_FLAGS"] = "--disable-gpu"
 
 class TIFFLayer:
-    """Class for handling TIFF layers."""
-
     def __init__(self, file_name):
         self.file_path = file_name
-        self.options = {"name": file_name}
+        self.layer = None
 
     def add_to_map(self, folium_map):
         with rasterio.open(self.file_path) as src:
             bounds = [[src.bounds.bottom, src.bounds.left], [src.bounds.top, src.bounds.right]]
-            image_overlay = ImageOverlay(
+            self.layer = ImageOverlay(
                 image=src.read(1),
                 bounds=bounds,
                 opacity=0.6,
@@ -41,20 +37,23 @@ class TIFFLayer:
                 cross_origin=True,
                 overlay=True
             )
-            image_overlay.add_to(folium_map)
-            return image_overlay
-
+            self.layer.add_to(folium_map)
+            return self.layer
+        
+    def remove_from_map(self, folium_map):
+        if self.layer:
+            # Remove the layer using JavaScript if needed
+            folium_map._children.pop(self.layer._name)
+            self.layer = None  # Clear reference after removing
 
 class ShapefileLayer:
-    """Class for handling Shapefile layers."""
-
     def __init__(self, file_name):
         self.file_path = file_name
-        self.options = {"name": file_name}
+        self.layer = None
 
     def add_to_map(self, folium_map):
         geodata = gpd.read_file(self.file_path)
-        shapefile_layer = folium.GeoJson(
+        self.layer = folium.GeoJson(
             geodata,
             name=os.path.basename(self.file_path),
             style_function=lambda feature: {
@@ -64,21 +63,23 @@ class ShapefileLayer:
                 'fillOpacity': 0.5
             }
         )
-        shapefile_layer.add_to(folium_map)
-        return shapefile_layer
-
+        self.layer.add_to(folium_map)
+        return self.layer
+    
+    def remove_from_map(self, folium_map):
+        if self.layer:
+            folium_map._children.pop(self.layer._name)
+            self.layer = None
 
 class GeoJSONLayer:
-    """Class for handling GeoJSON layers."""
-
     def __init__(self, file_name):
         self.file_path = file_name
-        self.options = {"name": file_name}
+        self.layer = None
 
     def add_to_map(self, folium_map):
         with open(self.file_path) as f:
             geojson_data = json.load(f)
-        geojson_layer = folium.GeoJson(
+        self.layer = folium.GeoJson(
             geojson_data,
             name=os.path.basename(self.file_path),
             style_function=lambda feature: {
@@ -88,34 +89,33 @@ class GeoJSONLayer:
                 'fillOpacity': 0.6
             }
         )
-        geojson_layer.add_to(folium_map)
-        return geojson_layer
-    
+        self.layer.add_to(folium_map)
+        return self.layer
+
+    def remove_from_map(self, folium_map):
+        if self.layer:
+            folium_map._children.pop(self.layer._name)
+            self.layer = None
+
 class BasemapDialog(QDialog):
     def __init__(self, parent=None):
         super().__init__(parent)
         self.setWindowTitle("Select Basemap")
         self.setFixedSize(200, 100)
-
-        # Create a layout for the dialog
         layout = QVBoxLayout()
-
-        # Create and add a label
         label = QLabel("Select a basemap from the list:")
         layout.addWidget(label)
-
-        # Create a QComboBox (dropdown) for basemap selection
+        
         self.basemap_combo = QComboBox()
-        # Add folium basemaps
+
         basemaps = [
             'OpenStreetMap', 'Stadia StamenToner', 'Stadia StamenWaterColor', 'CartoDB positron', 'CartoDB dark_matter'
         ]
         self.basemap_combo.addItems(basemaps)
         layout.addWidget(self.basemap_combo)
 
-        # Add an OK button
         ok_button = QPushButton("OK")
-        ok_button.clicked.connect(self.accept)  # Close dialog on clicking OK
+        ok_button.clicked.connect(self.accept)
         layout.addWidget(ok_button)
 
         self.setLayout(layout)
@@ -127,31 +127,30 @@ class GISApp(QMainWindow):
     def __init__(self):
         super().__init__()
         self.setWindowTitle("MapGIS")
-        self.setFixedSize(1500, 800)
-
+        self.setWindowIcon(QIcon("icons/mapgis.ico"))
+        self.setGeometry(100, 100, 1400, 1100)
         self.central_widget = QWidget()
         self.setCentralWidget(self.central_widget)
 
         self.path = None
         self.filters = 'Shp Files (*.shp)'
         self.m = folium.Map(tiles=None, control_scale=True)
+        MousePosition().add_to(self.m)
 
         self.main_layout = QHBoxLayout(self.central_widget)
 
         self.layer_list_widget = QListWidget()
         self.layer_list = QVBoxLayout(self.layer_list_widget)
-        self.layer_list_widget.setFixedWidth(160)  # Set fixed width in pixels
+        self.layer_list_widget.setFixedWidth(160)
         self.main_layout.addWidget(self.layer_list_widget)
-
+        
+        
         self.layer_list_label = QLabel("Layers")
         self.layer_list.addWidget(self.layer_list_label)
         self.layer_list.addStretch()
 
         self.layer_checboxes = {}
         self.layers = []
-
-        self.create_layer()
-
 
         # Create a QWebEngineView to display the Folium map
         self.web_view_widget = QWidget()
@@ -168,21 +167,19 @@ class GISApp(QMainWindow):
         self.table_widget.setRowCount(10)
         self.right_list.addWidget(self.table_widget)
         
-        self.main_layout.setStretch(0, 1)  # Stretch factor for the layer_list layout
+        self.main_layout.setStretch(0, 1)
         self.main_layout.setStretch(1, 14)
         self.main_layout.setStretch(2, 1)
 
-        self.geodata = None  # Placeholder for GeoDataFrame
+        self.geodata = None
 
         self.create_menu_bar()
         self.create_tool_bar()
         self.status_bar = self.statusBar()
 
     def create_menu_bar(self):
-        # Create a menu bar
         menubar = self.menuBar()
-
-        # Create a 'File' menu
+        # Create a menu
         file_menu = menubar.addMenu('File')
         edit_menu = menubar.addMenu('Edit')
         view_menu = menubar.addMenu('View')
@@ -198,8 +195,8 @@ class GISApp(QMainWindow):
         file_menu.addSeparator()
 
         load_action = QAction('Load Data', self)
-        load_action.setShortcut('Ctrl+L')  # Optional: Set shortcut
-        load_action.triggered.connect(self.load_data)  # Connect action to function
+        load_action.setShortcut('Ctrl+L')
+        load_action.triggered.connect(self.load_data)
         file_menu.addAction(load_action)
         
         save_action = QAction('Save', self)
@@ -210,13 +207,13 @@ class GISApp(QMainWindow):
         file_menu.addSeparator()
 
         quit_action = QAction('Quit', self)
-        quit_action.setShortcut('Alt+F4')  # Optional: Set shortcut
-        quit_action.triggered.connect(self.close)  # Connect action to quit the app
+        quit_action.setShortcut('Alt+F4')
+        quit_action.triggered.connect(self.close) 
         file_menu.addAction(quit_action)
 
         # Create view actions using QAction
         table_action = QAction('Attribute Table', self)
-        table_action.triggered.connect(self.attribute_table)  # Connect action to function
+        table_action.triggered.connect(self.attribute_table)
         view_menu.addAction(table_action)
 
         # Create edit actions using QAction
@@ -234,15 +231,17 @@ class GISApp(QMainWindow):
         
         copy_action = QAction('Copy', self)
         edit_menu.addAction(copy_action)
+        copy_action.setShortcut('Ctrl+C')
+        
         cut_action = QAction('Cut', self)
         edit_menu.addAction(cut_action)
+        cut_action.setShortcut('Ctrl+X')
+        
         paste_action = QAction('Paste', self)
         edit_menu.addAction(paste_action)
-        edit_menu.addSeparator()
+        paste_action.setShortcut('Ctrl+Y')
         
-        findMenu = edit_menu.addMenu("Add Basemap")
-        findMenu.addAction("Find...")
-        findMenu.addAction("Replace...")
+        edit_menu.addSeparator()
         
         # Create Geop actions using QAction
         buffer = QAction(QIcon('icons/buffer.png'), 'Buffer', self)
@@ -258,6 +257,7 @@ class GISApp(QMainWindow):
         
         # Create insert actions using QAction
         basemap_action = QAction('Add Basemap', self)
+        basemap_action.triggered.connect(self.open_basemap_dialog)
         insert_menu.addAction(basemap_action)
 
     def create_tool_bar(self):
@@ -266,19 +266,15 @@ class GISApp(QMainWindow):
         toolbar.setIconSize(QSize(15, 15))
 
         new_button = QAction(QIcon("icons/new.png"), "New File", self)
-        # button_action.triggered.connect(self.onMyToolBarButtonClick)
         toolbar.addAction(new_button)
 
         paste_button = QAction(QIcon("icons/paste.png"), "Paste", self)
-        # button_action.triggered.connect(self.onMyToolBarButtonClick)
         toolbar.addAction(paste_button)
 
         copy_button = QAction(QIcon("icons/copy.png"), "Copy", self)
-        # button_action.triggered.connect(self.onMyToolBarButtonClick)
         toolbar.addAction(copy_button)
 
         cut_button = QAction(QIcon("icons/cut.png"), "Cut", self)
-        # button_action.triggered.connect(self.onMyToolBarButtonClick)
         toolbar.addAction(cut_button)
 
         draw_button = QAction(QIcon("icons/polygon.png"), "Draw", self)
@@ -320,26 +316,16 @@ class GISApp(QMainWindow):
                 unioned_geodata = gpd.GeoDataFrame(geometry=[unioned])
                 self.geodata = unioned_geodata
                 self.display_map()
-
         except Exception as e:
             QMessageBox.critical(self, "Error", f"Union operation failed: {e}")
     
     def open_basemap_dialog(self):
-        """Open a dialog to select and load a basemap."""
         dialog = BasemapDialog(self)
         if dialog.exec():
             selected_basemap = dialog.get_selected_basemap()
-
-            # Call method to add the selected basemap
             self.add_basemap(selected_basemap)
 
     def add_basemap(self, basemap_name):
-        """Add the selected basemap to the map."""
-        # Ensure the map object is initialized
-        if self.m is None:
-            self.m = folium.Map(location=[0, 0], zoom_start=2, control_scale=True)
-
-        # Dictionary of Folium basemaps and their corresponding TileLayers
         basemap_dict = {
             'OpenStreetMap': 'openstreetmap',
             'Stadia StamenToner': 'stadiastamentoner',
@@ -350,8 +336,6 @@ class GISApp(QMainWindow):
 
         if basemap_name in basemap_dict:
             tile_layer_name = basemap_dict[basemap_name]
-
-            # Add the selected TileLayer to the map with attribution
             basemap_layer = folium.raster_layers.TileLayer(tile_layer_name)
             basemap_layer.add_to(self.m)
 
@@ -365,67 +349,60 @@ class GISApp(QMainWindow):
             QMessageBox.critical(self, "Error", f"Basemap {basemap_name} is not recognized.")
 
     def load_data(self):
-        file_path, _ = QFileDialog.getOpenFileName(
-            self,
-            "Load GeoData",
-            "",
-            "DataSets, Layers (*.tif *.tiff *.shp *.geojson)",
+        file_path, _ = QFileDialog.getOpenFileName(self, "Load GeoData", "", "DataSets, Layers (*.tif *.tiff *.shp *.geojson)",
             options=QFileDialog.Option.DontUseNativeDialog
         )
         if file_path:
             self.create_layer(file_path)
 
-    def create_layer(self):
-        tiff_layer = TIFFLayer('data/PERSIANN_1y2009.tif')
-        tiff_layer.add_to_map(self.m)
-        self.add_layer_checkbox(layer=tiff_layer, file_name='data/PERSIANN_1y2009.tif')
-        self.layers.append(tiff_layer)
+    def create_layer(self, file_path):
+        file_name = os.path.basename(file_path)
+        file_extension = os.path.splitext(file_path)[1]
+        try:
+            if file_extension in (".tif", ".tiff"):
+                layer = TIFFLayer(file_path)
+            elif file_extension == ".shp":
+                layer = ShapefileLayer(file_path)
+            elif file_extension == ".geojson":
+                layer = GeoJSONLayer(file_path)
 
-        shapefile_layer = ShapefileLayer('data/Oyo.shp')
-        shapefile_layer.add_to_map(self.m)
-        self.add_layer_checkbox(layer=shapefile_layer, file_name='data/Oyo.shp')
-        self.layers.append(shapefile_layer)
+            layer.add_to_map(self.m)
 
-        geojson_layer = GeoJSONLayer('data/Oyo.geojson')
-        geojson_layer.add_to_map(self.m)
-        self.add_layer_checkbox(layer=geojson_layer, file_name='data/Oyo.geojson')
-        self.layers.append(geojson_layer)
+            self.add_layer_checkbox(layer, file_name)
+            self.layers.append(layer)
 
-        # Add Layer Control
-        folium.LayerControl(collapsed=False).add_to(self.m)
-
-        # Save the map
-        self.m.save("custom_layers_map.html")
-        self.web_view.setUrl(QUrl("http://localhost:8000/custom_layers_map.html"))
+            # Save the map
+            data = io.BytesIO()
+            self.m.save(data, close_file=False)
+            self.web_view.setHtml(data.getvalue().decode())
+        except Exception as e:
+            QMessageBox.critical(self, "Error", f"Error loading file: {e}")
+            print(e)
 
     def add_layer_checkbox(self, layer, file_name):
-        layer_name = layer.options.get("name", file_name)
-        checkbox = QCheckBox(layer_name)
+        checkbox = QCheckBox(file_name)
         checkbox.setCheckState(Qt.CheckState.Checked)
+        checkbox.stateChanged.connect(lambda state: self.toggle_layer(layer, state))
         self.layer_list.addWidget(checkbox)
-        self.layer_checboxes[layer_name] = {"checkbox": checkbox, "layer": layer}
-        checkbox.stateChanged.connect(lambda state: self.toggle_layer(state, layer))
 
     def toggle_layer(self, state, layer):
-        # Check the state without changing it
-        print(state)
+        if state == 2:
+            layer.add_to_map(self.m)
+        else:
+            layer.remove_from_map(self.m)
 
     def attribute_table(self, file_path):
         if file_path:
             try:
-                # data = gpd.read_file(fifile_pathle)
-                # data.head()
                 pass
             except Exception as e:
                 QMessageBox.critical(self, "Error", f"Falied to load csv file")
 
     def draw_polygon(self):
         Draw(export=True).add_to(self.m)
-        self.m.save("map.html")
-
-        # Load the HTML file in the QWebEngineView
-        self.web_view.setUrl(QUrl("http://localhost:8000/map.html"))
-
+        data = io.BytesIO()
+        self.m.save(data, close_file=False)
+        self.web_view.setHtml(data.getvalue().decode())
 
 def run_local_server():
     htttd = HTTPServer(('localhost', 8000), SimpleHTTPRequestHandler)
