@@ -2,23 +2,25 @@ import sys
 from pathlib import Path
 import folium.raster_layers
 import pandas as pd
+from shapely.geometry import Point
+import numpy as np
 import json
 import io
 import geopandas as gpd
-from http.server import SimpleHTTPRequestHandler, HTTPServer
-import threading
 import rasterio
 import folium
 from folium.plugins import Draw, MousePosition
-from PyQt6.QtWidgets import QApplication, QMainWindow, QVBoxLayout, QPushButton, QWidget, QFileDialog, QLabel, QHBoxLayout, QCheckBox, QListWidget, QTableWidget, QToolBar, QDialog, QTabWidget, QPushButton, QMessageBox, QTextEdit, QInputDialog, QComboBox
+from PyQt6.QtWidgets import QApplication, QMainWindow, QVBoxLayout, QPushButton, QWidget, QFileDialog, QLabel, QHBoxLayout, QCheckBox, QListWidget, QTableWidget, QToolBar, QDialog, QTabWidget, QPushButton, QMessageBox, QTextEdit, QInputDialog, QComboBox, QProgressBar, QTreeWidget, QTreeWidgetItem, QListWidgetItem
 from PyQt6.QtWebEngineWidgets import QWebEngineView
 from PyQt6.QtGui import QAction, QIcon
-from PyQt6.QtCore import QUrl, QSize, Qt
+from PyQt6.QtCore import QSize, Qt
 from folium.raster_layers import ImageOverlay
 import os
+import time
 os.environ["QT_OPENGL"] = "software"
-os.environ["QTWEBENGINE_DISABLE_GPU"] = "0"
-os.environ["QTWEBENGINE_CHROMIUM_FLAGS"] = "--disable-gpu"
+os.environ["QT_QUICK_BACKEND"] = "software"
+# os.environ["QTWEBENGINE_DISABLE_GPU"] = "0"
+# os.environ["QTWEBENGINE_CHROMIUM_FLAGS"] = "--disable-gpu"
 
 class TIFFLayer:
     def __init__(self, file_name):
@@ -97,6 +99,25 @@ class GeoJSONLayer:
             folium_map._children.pop(self.layer._name)
             self.layer = None
 
+class CircleMarker:
+    def __init__(self, file_name):
+        self.file_path = file_name
+        self.layer = None
+    
+    def add_to_map(self, folium_map):
+        geodata = gpd.read_file(self.file_path)
+        for idx, row in geodata.iterrows():
+            self.layer = folium.CircleMarker(
+                location=(row.geometry.y, row.geometry.x),
+                radius=2,  # You can adjust the size
+                color='black',
+                fill=True,
+                fill_opacity=0.5,
+                popup=str(row['value'])  # Optionally add a popup with the value
+            )
+        self.layer.add_to(folium_map)
+        return self.layer
+
 class BasemapDialog(QDialog):
     def __init__(self, parent=None):
         super().__init__(parent)
@@ -123,14 +144,55 @@ class BasemapDialog(QDialog):
     def get_selected_basemap(self):
         return self.basemap_combo.currentText()
 
+def raster_to_point(raster_file, output_file):
+    with rasterio.open(raster_file) as src:
+        # Read the data from the first band
+        band = src.read(1)
+
+        # Get the affine transformation
+        transform = src.transform
+
+        default_crs="EPSG:4326"
+        crs = src.crs if src.crs is not None else "EPSG:4326"
+        # Get the row and column indices of the non-null pixels
+        rows, cols = np.where(band != src.nodata)
+
+        # Create a list to hold point geometries
+        points = []
+        values = []
+
+        for r, c in zip(rows, cols):
+            # Get the value of the pixel
+            value = band[r, c]
+            values.append(value)
+
+            # Calculate the x, y coordinates
+            x, y = transform * (c, r)
+            points.append(Point(x, y))
+
+        # Create a GeoDataFrame
+        gdf = gpd.GeoDataFrame({'value': values, 'geometry': points}, crs=crs)
+
+        # Save to a shapefile
+        gdf.to_file(output_file, driver='ESRI Shapefile')
+            
 class GISApp(QMainWindow):
     def __init__(self):
         super().__init__()
         self.setWindowTitle("MapGIS")
         self.setWindowIcon(QIcon("icons/mapgis.ico"))
-        self.setGeometry(100, 100, 1400, 1100)
+        self.setGeometry(100, 100, 1000, 900)
         self.central_widget = QWidget()
         self.setCentralWidget(self.central_widget)
+
+        self.setStyleSheet("""
+            QProgressBar {
+                height: 7px;
+            }
+            QWebEngineView {
+                border-color: "black";
+            }
+        """)
 
         self.path = None
         self.filters = 'Shp Files (*.shp)'
@@ -174,8 +236,11 @@ class GISApp(QMainWindow):
         self.geodata = None
 
         self.create_menu_bar()
-        self.create_tool_bar()
+        self.toolbar1()
+        self.toolbar2()
+        
         self.status_bar = self.statusBar()
+        self.status_bar.showMessage('Ready', 10000)
 
     def create_menu_bar(self):
         menubar = self.menuBar()
@@ -260,7 +325,7 @@ class GISApp(QMainWindow):
         basemap_action.triggered.connect(self.open_basemap_dialog)
         insert_menu.addAction(basemap_action)
 
-    def create_tool_bar(self):
+    def toolbar1(self):
         toolbar = QToolBar("My main toolbar")
         self.addToolBar(toolbar)
         toolbar.setIconSize(QSize(15, 15))
@@ -284,7 +349,20 @@ class GISApp(QMainWindow):
         basemap_button = QAction(QIcon("icons/basemap.png"), "BaseMap", self)
         basemap_button.triggered.connect(self.open_basemap_dialog)
         toolbar.addAction(basemap_button)
-        
+    
+    def toolbar2(self):
+        toolbar = QToolBar("My main toolbar")
+        self.addToolBar(toolbar)
+        toolbar.setIconSize(QSize(15, 15))
+
+        toolbox_button = QAction(QIcon("icons/toolbox.png"), "ToolBox", self)
+        toolbox_button.triggered.connect(self.toolbox_dialog)
+        toolbar.addAction(toolbox_button)
+
+    def toolbox_dialog(self):
+        dialog = ToolDialog()
+        dialog.exec()
+
     def save_data(self):
         text_edit = QTextEdit()
 
@@ -352,19 +430,42 @@ class GISApp(QMainWindow):
         file_path, _ = QFileDialog.getOpenFileName(self, "Load GeoData", "", "DataSets, Layers (*.tif *.tiff *.shp *.geojson)",
             options=QFileDialog.Option.DontUseNativeDialog
         )
+
         if file_path:
             self.create_layer(file_path)
 
     def create_layer(self, file_path):
         file_name = os.path.basename(file_path)
         file_extension = os.path.splitext(file_path)[1]
+        
+        temp_status_widget = QWidget(self)
+        temp_layout = QHBoxLayout()
+        temp_status_widget.setLayout(temp_layout)
+
+        progress_bar = QProgressBar(self)
+        progress_bar.setValue(0)
+
+        temp_layout.addWidget(QLabel("Loading: "))
+        temp_layout.addWidget(progress_bar)
+
+        self.statusBar().addPermanentWidget(temp_status_widget)
+        self.statusBar().showMessage(f"Loading {file_name}")
+
+        def progress(self):
+            for i in range(1, 101):
+                time.sleep(0.02)  # Simulating load time for each step
+                progress_bar.setValue(i)
+                QApplication.processEvents()
         try:
             if file_extension in (".tif", ".tiff"):
                 layer = TIFFLayer(file_path)
+                progress(self)
             elif file_extension == ".shp":
                 layer = ShapefileLayer(file_path)
+                progress(self)
             elif file_extension == ".geojson":
                 layer = GeoJSONLayer(file_path)
+                progress(self)
 
             layer.add_to_map(self.m)
 
@@ -375,9 +476,11 @@ class GISApp(QMainWindow):
             data = io.BytesIO()
             self.m.save(data, close_file=False)
             self.web_view.setHtml(data.getvalue().decode())
+            self.statusBar().showMessage(f"{file_name} loaded successfully", 5000)
         except Exception as e:
-            QMessageBox.critical(self, "Error", f"Error loading file: {e}")
-            print(e)
+            self.statusBar().showMessage(f"Error loading data: {e}")
+        finally:
+            self.statusBar().removeWidget(temp_status_widget)
 
     def add_layer_checkbox(self, layer, file_name):
         checkbox = QCheckBox(file_name)
@@ -404,16 +507,81 @@ class GISApp(QMainWindow):
         self.m.save(data, close_file=False)
         self.web_view.setHtml(data.getvalue().decode())
 
-def run_local_server():
-    htttd = HTTPServer(('localhost', 8000), SimpleHTTPRequestHandler)
-    htttd.serve_forever()
+class ToolDialog(QDialog):
+    def __init__(self):
+        super().__init__()
+        self.main_window = GISApp()
+        self.setWindowTitle("Toolbox")
+        self.setGeometry(100, 100, 300, 400)
 
-if __name__ == "__main__":
-    server_thread = threading.Thread(target=run_local_server)
-    server_thread.daemon = True
-    server_thread.start()
+        # Layout for the dialog
+        layout = QVBoxLayout()
 
-    app = QApplication(sys.argv)
-    window = GISApp()
-    window.show()
-    sys.exit(app.exec())
+        # Label for description
+        label = QLabel("Select a tool to use:")
+        layout.addWidget(label)
+
+        # Tree widget for tools with categories
+        self.tool_tree = QTreeWidget()
+        self.tool_tree.setHeaderLabel("Tools")
+
+        # Define categories and tools with their icons
+        categories = {
+            "Conversion Tools": {
+                "Raster to Point": "icons/toolbox.png",
+                "Raster to Polygon": "icons/toolbox.png",
+                "Vector to Raster": "icons/toolbox.png"
+            },
+            "Geoprocessing Tools": {
+                "Clip": "icons/toolbox.png",
+                "Buffer": "icons/toolbox.png",
+                "Dissolve": "icons/toolbox.png"
+            },
+            "Spatial Analysis Tools": {
+                "Spatial Join": "icons/toolbox.png",
+                "Intersect": "icons/toolbox.png",
+                "Union": "icons/toolbox.png"
+            },
+            "Projections": {
+                "Define Projection": "icons/toolbox.png",
+                "Reproject": "icons/toolbox.png"
+            }
+        }
+
+        # Populate the tree with categories and tools
+        for category, tools in categories.items():
+            category_item = QTreeWidgetItem([category])
+            category_item.setIcon(0, QIcon("icons/toolbox.png"))
+            for tool, icon_path in tools.items():
+                tool_item = QTreeWidgetItem([tool])
+                tool_item.setIcon(0, QIcon(icon_path))  # Set the icon for the tool
+                category_item.addChild(tool_item)
+            self.tool_tree.addTopLevelItem(category_item)
+
+        # Connect the selection event
+        self.tool_tree.itemClicked.connect(self.tool_selected)
+
+        layout.addWidget(self.tool_tree)
+        self.setLayout(layout)
+
+    def tool_selected(self, item):
+        # Perform action based on tool selection
+        if item.parent():  # Ensure it's a tool (not a category)
+            selected_tool = item.text(0)
+            if selected_tool == "Raster to Point":
+                self.perform_raster_to_point()
+
+    def perform_raster_to_point(self):
+        raster_file, _ = QFileDialog.getOpenFileName(self, "Select Raster File", "", "TIF Files (*.tif)")
+        if raster_file:
+            base_name = os.path.splitext(os.path.basename(raster_file))[0]
+            output_file = f"{base_name}.shp"
+            if output_file:
+                raster_to_point(raster_file, output_file)
+                print("Conversion complete")
+                self.main_window.create_layer(output_file)
+
+app = QApplication(sys.argv)
+window = GISApp()
+window.show()
+sys.exit(app.exec())
