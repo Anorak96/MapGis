@@ -10,10 +10,10 @@ import geopandas as gpd
 import rasterio
 import folium
 from folium.plugins import Draw, MousePosition
-from PyQt6.QtWidgets import QApplication, QMainWindow, QVBoxLayout, QPushButton, QWidget, QFileDialog, QLabel, QHBoxLayout, QCheckBox, QListWidget, QTableWidget, QToolBar, QDialog, QTabWidget, QPushButton, QMessageBox, QTextEdit, QInputDialog, QComboBox, QProgressBar, QTreeWidget, QTreeWidgetItem, QListWidgetItem
+from PyQt6.QtWidgets import QApplication, QMainWindow, QVBoxLayout, QPushButton, QWidget, QFileDialog, QLabel, QHBoxLayout, QCheckBox, QListWidget, QTableWidget, QToolBar, QDialog, QTabWidget, QPushButton, QMessageBox, QTextEdit, QInputDialog, QComboBox, QProgressBar, QTreeWidget, QTreeWidgetItem
 from PyQt6.QtWebEngineWidgets import QWebEngineView
 from PyQt6.QtGui import QAction, QIcon
-from PyQt6.QtCore import QSize, Qt
+from PyQt6.QtCore import QSize, Qt, QUrl
 from folium.raster_layers import ImageOverlay
 import os
 import time
@@ -102,12 +102,13 @@ class GeoJSONLayer:
 class CircleMarker:
     def __init__(self, file_name):
         self.file_path = file_name
-        self.layer = None
+        self.layer = []
     
     def add_to_map(self, folium_map):
         geodata = gpd.read_file(self.file_path)
         for idx, row in geodata.iterrows():
-            self.layer = folium.CircleMarker(
+            print(f"Adding marker at: ({row.geometry.y}, {row.geometry.x})")
+            circle_marker  = folium.CircleMarker(
                 location=(row.geometry.y, row.geometry.x),
                 radius=2,  # You can adjust the size
                 color='black',
@@ -115,8 +116,8 @@ class CircleMarker:
                 fill_opacity=0.5,
                 popup=str(row['value'])  # Optionally add a popup with the value
             )
-        self.layer.add_to(folium_map)
-        return self.layer
+            circle_marker.add_to(folium_map)
+            self.layer.append(circle_marker)
 
 class BasemapDialog(QDialog):
     def __init__(self, parent=None):
@@ -239,8 +240,7 @@ class GISApp(QMainWindow):
         self.toolbar1()
         self.toolbar2()
         
-        self.status_bar = self.statusBar()
-        self.status_bar.showMessage('Ready', 10000)
+        self.statusBar().showMessage('Ready', 10000)
 
     def create_menu_bar(self):
         menubar = self.menuBar()
@@ -414,7 +414,7 @@ class GISApp(QMainWindow):
 
         if basemap_name in basemap_dict:
             tile_layer_name = basemap_dict[basemap_name]
-            basemap_layer = folium.raster_layers.TileLayer(tile_layer_name)
+            basemap_layer = folium.TileLayer(tiles=tile_layer_name, name=basemap_name)
             basemap_layer.add_to(self.m)
 
             self.add_layer_checkbox(basemap_layer, basemap_name)
@@ -574,12 +574,22 @@ class ToolDialog(QDialog):
     def perform_raster_to_point(self):
         raster_file, _ = QFileDialog.getOpenFileName(self, "Select Raster File", "", "TIF Files (*.tif)")
         if raster_file:
-            base_name = os.path.splitext(os.path.basename(raster_file))[0]
-            output_file = f"{base_name}.shp"
-            if output_file:
-                raster_to_point(raster_file, output_file)
-                print("Conversion complete")
-                self.main_window.create_layer(output_file)
+            input_raster_path = os.path.abspath(raster_file)
+            directory = os.path.dirname(raster_file)
+            filename = os.path.basename(input_raster_path)
+            file_root, file_extension = os.path.splitext(filename) 
+            output_filename = file_root + "_points.shp"
+            output_path = os.path.join(directory, output_filename)
+            print(output_path)
+            
+            if output_path:
+                raster_to_point(raster_file, output_path)
+                points = CircleMarker(file_name=output_path)
+                points.add_to_map(self.main_window.m)
+                data = io.BytesIO()
+                self.main_window.m.save(data, close_file=False)
+                self.main_window.web_view.setHtml(data.getvalue().decode())
+                print(self.main_window.layers, self.main_window.layer_checboxes)
 
 app = QApplication(sys.argv)
 window = GISApp()
