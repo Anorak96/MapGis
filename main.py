@@ -1,21 +1,21 @@
-import sys
 from pathlib import Path
-import folium.raster_layers
-import pandas as pd
-from shapely.geometry import Point
-import numpy as np
 import json
 import io
+import folium.raster_layers
+import pandas as pd
+import rioxarray
+from shapely.geometry import Point
+import numpy as np
 import geopandas as gpd
 import rasterio
 import folium
 from folium.plugins import Draw, MousePosition
-from PyQt6.QtWidgets import QApplication, QMainWindow, QVBoxLayout, QPushButton, QWidget, QFileDialog, QLabel, QHBoxLayout, QCheckBox, QListWidget, QTableWidget, QToolBar, QDialog, QTabWidget, QPushButton, QMessageBox, QTextEdit, QInputDialog, QComboBox, QProgressBar, QTreeWidget, QTreeWidgetItem
-from PyQt6.QtWebEngineWidgets import QWebEngineView
-from PyQt6.QtGui import QAction, QIcon
-from PyQt6.QtCore import QSize, Qt, QUrl
+from PyQt6.QtWidgets import QApplication, QMainWindow, QVBoxLayout, QPushButton, QWidget, QFileDialog, QLabel, QHBoxLayout, QCheckBox, QListWidget, QTableWidget, QToolBar, QDialog, QPushButton, QTextEdit, QInputDialog, QComboBox, QProgressBar, QTreeWidget, QTreeWidgetItem, QSplashScreen, QLineEdit, QFormLayout, QMenu
+from PyQt6.QtWebEngineWidgets import QWebEngineView 
+from PyQt6.QtGui import QAction, QIcon, QPixmap, QIntValidator
+from PyQt6.QtCore import QSize, Qt, QPoint
 from folium.raster_layers import ImageOverlay
-import os
+import os, sys
 import time
 os.environ["QT_OPENGL"] = "software"
 os.environ["QT_QUICK_BACKEND"] = "software"
@@ -59,7 +59,7 @@ class ShapefileLayer:
             geodata,
             name=os.path.basename(self.file_path),
             style_function=lambda feature: {
-                'fillColor': 'blue',
+                'fillColor': 'grey',
                 'color': 'black',
                 'weight': 2,
                 'fillOpacity': 0.5
@@ -102,13 +102,12 @@ class GeoJSONLayer:
 class CircleMarker:
     def __init__(self, file_name):
         self.file_path = file_name
-        self.layer = []
+        self.layer = None
     
     def add_to_map(self, folium_map):
         geodata = gpd.read_file(self.file_path)
         for idx, row in geodata.iterrows():
-            print(f"Adding marker at: ({row.geometry.y}, {row.geometry.x})")
-            circle_marker  = folium.CircleMarker(
+            self.layer  = folium.CircleMarker(
                 location=(row.geometry.y, row.geometry.x),
                 radius=2,  # You can adjust the size
                 color='black',
@@ -116,8 +115,9 @@ class CircleMarker:
                 fill_opacity=0.5,
                 popup=str(row['value'])  # Optionally add a popup with the value
             )
-            circle_marker.add_to(folium_map)
-            self.layer.append(circle_marker)
+        self.layer.add_to(folium_map)
+        return self.layer
+
 
 class BasemapDialog(QDialog):
     def __init__(self, parent=None):
@@ -136,7 +136,7 @@ class BasemapDialog(QDialog):
         self.basemap_combo.addItems(basemaps)
         layout.addWidget(self.basemap_combo)
 
-        ok_button = QPushButton("OK")
+        ok_button = QPushButton("Add")
         ok_button.clicked.connect(self.accept)
         layout.addWidget(ok_button)
 
@@ -197,7 +197,7 @@ class GISApp(QMainWindow):
 
         self.path = None
         self.filters = 'Shp Files (*.shp)'
-        self.m = folium.Map(tiles=None, control_scale=True)
+        self.m = folium.Map(location=[0, 0], tiles=None, control_scale=True, zoom_start=2)
         MousePosition().add_to(self.m)
 
         self.main_layout = QHBoxLayout(self.central_widget)
@@ -207,10 +207,14 @@ class GISApp(QMainWindow):
         self.layer_list_widget.setFixedWidth(160)
         self.main_layout.addWidget(self.layer_list_widget)
         
-        
         self.layer_list_label = QLabel("Layers")
         self.layer_list.addWidget(self.layer_list_label)
         self.layer_list.addStretch()
+
+        self.layer_context_menu = QMenu(self)
+        remove_layer = self.layer_context_menu.addAction("Remove Layer")
+        zoom_to_layer = self.layer_context_menu.addAction("Zoom to Layer")
+        properties = self.layer_context_menu.addAction("Layer Properties")
 
         self.layer_checboxes = {}
         self.layers = []
@@ -224,12 +228,12 @@ class GISApp(QMainWindow):
         self.right_list = QVBoxLayout(self.right_list_widget)
         self.right_list_widget.setFixedWidth(160)
         self.main_layout.addWidget(self.right_list_widget)
-
+        
         self.table_widget = QTableWidget(self)
         self.table_widget.setColumnCount(1)
         self.table_widget.setRowCount(10)
         self.right_list.addWidget(self.table_widget)
-        
+
         self.main_layout.setStretch(0, 1)
         self.main_layout.setStretch(1, 14)
         self.main_layout.setStretch(2, 1)
@@ -238,9 +242,13 @@ class GISApp(QMainWindow):
 
         self.create_menu_bar()
         self.toolbar1()
+        self.toolbar3()
         self.toolbar2()
         
         self.statusBar().showMessage('Ready', 10000)
+
+    def contextMenu(self, event):
+        self.layer_context_menu.exec(event.globalPos())
 
     def create_menu_bar(self):
         menubar = self.menuBar()
@@ -310,7 +318,7 @@ class GISApp(QMainWindow):
         
         # Create Geop actions using QAction
         buffer = QAction(QIcon('icons/buffer.png'), 'Buffer', self)
-        buffer.triggered.connect(self.buffer_data)
+        buffer.triggered.connect(self.buffer)
         geop_menu.addAction(buffer)
 
         clip = QAction('Clip', self)
@@ -359,6 +367,18 @@ class GISApp(QMainWindow):
         toolbox_button.triggered.connect(self.toolbox_dialog)
         toolbar.addAction(toolbox_button)
 
+    def toolbar3(self):
+        toolbar = QToolBar("Zoom")
+        self.addToolBar(toolbar)
+        toolbar.setIconSize(QSize(15, 15))
+        toolbar.addSeparator()
+
+        zoomin_button = QAction(QIcon("icons/zoom-in.png"), "Zoom In", self)
+        toolbar.addAction(zoomin_button)
+
+        zoomout_button = QAction(QIcon("icons/zoom-out.png"), "Zoom Out", self)
+        toolbar.addAction(zoomout_button)
+
     def toolbox_dialog(self):
         dialog = ToolDialog()
         dialog.exec()
@@ -377,15 +397,43 @@ class GISApp(QMainWindow):
         self.path = Path(filename)
         self.path.write_text(text_edit.toPlainText())
 
-    def buffer_data(self):
-        try:
-            distance, ok = QInputDialog.getDouble(self, 'Buffer', 'Enter buffer distance:', min=0)
-            if ok and self.geodata is not None:
-                buffered = self.geodata.buffer(distance)
-                self.geodata.geometry = buffered
-                self.display_map()
-        except Exception as e:
-            QMessageBox.critical(self, "Error", f"Buffer operation failed: {e}")
+    def buffer(self):
+        dialog = QDialog()
+        dialog.setWindowIcon(QIcon('icons/buffer.png'))
+        dialog.setWindowTitle("Buffer")
+        self.layer_list = QListWidget()
+        self.layer_list.addItems(self.layers)  # Add the layers to the list
+        self.layer_list.setSelectionMode(QListWidget.SelectionMode.SingleSelection)
+
+        self.number_input = QLineEdit()
+        self.number_input.setValidator(QIntValidator())
+        ok_button = QPushButton("OK")
+        ok_button.clicked.connect(dialog.accept)
+        
+        cancel_button = QPushButton("Cancel")
+        cancel_button.clicked.connect(dialog.reject)
+
+        layout = QVBoxLayout()
+        layout.addWidget(QLabel("Select a Layer:"))
+        layout.addWidget(self.layer_list)
+        
+        form_layout = QFormLayout()
+        form_layout.addRow("Distance(in cm):", self.number_input)
+        layout.addLayout(form_layout)
+
+        button_layout = QHBoxLayout()
+        button_layout.addWidget(ok_button)
+        button_layout.addWidget(cancel_button)
+        layout.addLayout(button_layout)
+
+    def clip(self):
+        file_path, _ = QFileDialog.getOpenFileName(self, "Load GeoData", "", "DataSets, Layers (*.tif *.tiff *.shp *.geojson)",
+            options=QFileDialog.Option.DontUseNativeDialog
+        )
+        xds = rioxarray.open_rasterio(
+            file_path,
+            masked=True,
+        )
 
     def union_data(self):
         try:
@@ -395,7 +443,7 @@ class GISApp(QMainWindow):
                 self.geodata = unioned_geodata
                 self.display_map()
         except Exception as e:
-            QMessageBox.critical(self, "Error", f"Union operation failed: {e}")
+            self.statusBar().showMessage(f"Union operation failed: {e}")
     
     def open_basemap_dialog(self):
         dialog = BasemapDialog(self)
@@ -424,13 +472,12 @@ class GISApp(QMainWindow):
             self.m.save(data, close_file=False)
             self.web_view.setHtml(data.getvalue().decode())
         else:
-            QMessageBox.critical(self, "Error", f"Basemap {basemap_name} is not recognized.")
+            self.statusBar().showMessage(f"Basemap {basemap_name} is not recognized.")
 
     def load_data(self):
         file_path, _ = QFileDialog.getOpenFileName(self, "Load GeoData", "", "DataSets, Layers (*.tif *.tiff *.shp *.geojson)",
             options=QFileDialog.Option.DontUseNativeDialog
         )
-
         if file_path:
             self.create_layer(file_path)
 
@@ -451,7 +498,7 @@ class GISApp(QMainWindow):
         self.statusBar().addPermanentWidget(temp_status_widget)
         self.statusBar().showMessage(f"Loading {file_name}")
 
-        def progress(self):
+        def progress():
             for i in range(1, 101):
                 time.sleep(0.02)  # Simulating load time for each step
                 progress_bar.setValue(i)
@@ -459,26 +506,34 @@ class GISApp(QMainWindow):
         try:
             if file_extension in (".tif", ".tiff"):
                 layer = TIFFLayer(file_path)
-                progress(self)
+                progress()
             elif file_extension == ".shp":
-                layer = ShapefileLayer(file_path)
-                progress(self)
+                geodata = gpd.read_file(file_path)
+                if geodata.geometry.iloc[0].geom_type == 'Point':
+                    layer = CircleMarker(file_path)
+                    self.add_layer_checkbox(layer, file_name)
+                    self.layers.append(file_name)
+                    print('circlemarker', layer)
+                else:
+                    layer = ShapefileLayer(file_path)
+                    print('shapelayer')
+                progress()
             elif file_extension == ".geojson":
                 layer = GeoJSONLayer(file_path)
-                progress(self)
-
+                progress()
+    
             layer.add_to_map(self.m)
-
             self.add_layer_checkbox(layer, file_name)
-            self.layers.append(layer)
-
+            self.layers.append(file_name)
             # Save the map
             data = io.BytesIO()
             self.m.save(data, close_file=False)
             self.web_view.setHtml(data.getvalue().decode())
             self.statusBar().showMessage(f"{file_name} loaded successfully", 5000)
+            print(self.layers, self.layer_checboxes)
         except Exception as e:
             self.statusBar().showMessage(f"Error loading data: {e}")
+            print(e)
         finally:
             self.statusBar().removeWidget(temp_status_widget)
 
@@ -499,7 +554,7 @@ class GISApp(QMainWindow):
             try:
                 pass
             except Exception as e:
-                QMessageBox.critical(self, "Error", f"Falied to load csv file")
+                self.statusBar().showMessage(f"Error {e}.")
 
     def draw_polygon(self):
         Draw(export=True).add_to(self.m)
@@ -530,7 +585,8 @@ class ToolDialog(QDialog):
             "Conversion Tools": {
                 "Raster to Point": "icons/toolbox.png",
                 "Raster to Polygon": "icons/toolbox.png",
-                "Vector to Raster": "icons/toolbox.png"
+                "Vector to Raster": "icons/toolbox.png",
+                "Vector to GeoJSON": "icons/toolbox.png"
             },
             "Geoprocessing Tools": {
                 "Clip": "icons/toolbox.png",
@@ -563,35 +619,85 @@ class ToolDialog(QDialog):
 
         layout.addWidget(self.tool_tree)
         self.setLayout(layout)
-
+    
     def tool_selected(self, item):
         # Perform action based on tool selection
         if item.parent():  # Ensure it's a tool (not a category)
             selected_tool = item.text(0)
             if selected_tool == "Raster to Point":
                 self.perform_raster_to_point()
+            elif selected_tool == "Raster to Point":
+                self.perform_shapefile_to_geojson()
 
     def perform_raster_to_point(self):
         raster_file, _ = QFileDialog.getOpenFileName(self, "Select Raster File", "", "TIF Files (*.tif)")
         if raster_file:
             input_raster_path = os.path.abspath(raster_file)
+            print("input path", input_raster_path)
             directory = os.path.dirname(raster_file)
+            print("input dir", directory)
             filename = os.path.basename(input_raster_path)
             file_root, file_extension = os.path.splitext(filename) 
             output_filename = file_root + "_points.shp"
             output_path = os.path.join(directory, output_filename)
-            print(output_path)
+            print("output", output_path)
             
             if output_path:
-                raster_to_point(raster_file, output_path)
-                points = CircleMarker(file_name=output_path)
-                points.add_to_map(self.main_window.m)
-                data = io.BytesIO()
-                self.main_window.m.save(data, close_file=False)
-                self.main_window.web_view.setHtml(data.getvalue().decode())
-                print(self.main_window.layers, self.main_window.layer_checboxes)
+                with rasterio.open(raster_file) as src:
+                    # Read the data from the first band
+                    band = src.read(1)
 
-app = QApplication(sys.argv)
-window = GISApp()
-window.show()
-sys.exit(app.exec())
+                    # Get the affine transformation
+                    transform = src.transform
+
+                    default_crs="EPSG:4326"
+                    crs = src.crs if src.crs is not None else "EPSG:4326"
+                    # Get the row and column indices of the non-null pixels
+                    rows, cols = np.where(band != src.nodata)
+
+                    # Create a list to hold point geometries
+                    points = []
+                    values = []
+
+                    for r, c in zip(rows, cols):
+                        # Get the value of the pixel
+                        value = band[r, c]
+                        values.append(value)
+
+                        # Calculate the x, y coordinates
+                        x, y = transform * (c, r)
+                        points.append(Point(x, y))
+
+                    # Create a GeoDataFrame
+                    gdf = gpd.GeoDataFrame({'value': values, 'geometry': points}, crs=crs)
+
+                    # Save to a shapefile
+                    gdf.to_file(output_path, driver='ESRI Shapefile')
+
+                self.main_window.create_layer(file_path=output_path)
+                
+    
+    def perform_shapefile_to_geojson(shapefile_path, output_geojson_path):
+        try:
+            # Read the shapefile
+            gdf = gpd.read_file(shapefile_path)
+
+            # Convert to GeoJSON and save
+            gdf.to_file(output_geojson_path, driver='GeoJSON')
+
+            print(f"Shapefile {shapefile_path} successfully converted to GeoJSON: {output_geojson_path}")
+
+        except Exception as e:
+            print(f"Error converting shapefile to GeoJSON: {e}")
+
+if __name__ == "__main__":
+    app = QApplication(sys.argv)
+    pixmap = QPixmap("icons/loading.png").scaled(500, 500, Qt.AspectRatioMode.KeepAspectRatioByExpanding)
+    splash = QSplashScreen(pixmap)
+    splash.show()
+    app.processEvents()
+
+    window = GISApp()
+    window.show()
+    splash.finish(window)
+    sys.exit(app.exec())
