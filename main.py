@@ -19,8 +19,6 @@ import os, sys
 import time
 os.environ["QT_OPENGL"] = "software"
 os.environ["QT_QUICK_BACKEND"] = "software"
-# os.environ["QTWEBENGINE_DISABLE_GPU"] = "0"
-# os.environ["QTWEBENGINE_CHROMIUM_FLAGS"] = "--disable-gpu"
 
 class TIFFLayer:
     def __init__(self, file_name):
@@ -144,38 +142,6 @@ class BasemapDialog(QDialog):
 
     def get_selected_basemap(self):
         return self.basemap_combo.currentText()
-
-def raster_to_point(raster_file, output_file):
-    with rasterio.open(raster_file) as src:
-        # Read the data from the first band
-        band = src.read(1)
-
-        # Get the affine transformation
-        transform = src.transform
-
-        default_crs="EPSG:4326"
-        crs = src.crs if src.crs is not None else "EPSG:4326"
-        # Get the row and column indices of the non-null pixels
-        rows, cols = np.where(band != src.nodata)
-
-        # Create a list to hold point geometries
-        points = []
-        values = []
-
-        for r, c in zip(rows, cols):
-            # Get the value of the pixel
-            value = band[r, c]
-            values.append(value)
-
-            # Calculate the x, y coordinates
-            x, y = transform * (c, r)
-            points.append(Point(x, y))
-
-        # Create a GeoDataFrame
-        gdf = gpd.GeoDataFrame({'value': values, 'geometry': points}, crs=crs)
-
-        # Save to a shapefile
-        gdf.to_file(output_file, driver='ESRI Shapefile')
             
 class GISApp(QMainWindow):
     def __init__(self):
@@ -246,9 +212,6 @@ class GISApp(QMainWindow):
         self.toolbar2()
         
         self.statusBar().showMessage('Ready', 10000)
-
-    def contextMenu(self, event):
-        self.layer_context_menu.exec(event.globalPos())
 
     def create_menu_bar(self):
         menubar = self.menuBar()
@@ -378,10 +341,6 @@ class GISApp(QMainWindow):
 
         zoomout_button = QAction(QIcon("icons/zoom-out.png"), "Zoom Out", self)
         toolbar.addAction(zoomout_button)
-
-    def toolbox_dialog(self):
-        dialog = ToolDialog()
-        dialog.exec()
 
     def save_data(self):
         text_edit = QTextEdit()
@@ -561,134 +520,6 @@ class GISApp(QMainWindow):
         data = io.BytesIO()
         self.m.save(data, close_file=False)
         self.web_view.setHtml(data.getvalue().decode())
-
-class ToolDialog(QDialog):
-    def __init__(self):
-        super().__init__()
-        self.main_window = GISApp()
-        self.setWindowTitle("Toolbox")
-        self.setGeometry(100, 100, 300, 400)
-
-        # Layout for the dialog
-        layout = QVBoxLayout()
-
-        # Label for description
-        label = QLabel("Select a tool to use:")
-        layout.addWidget(label)
-
-        # Tree widget for tools with categories
-        self.tool_tree = QTreeWidget()
-        self.tool_tree.setHeaderLabel("Tools")
-
-        # Define categories and tools with their icons
-        categories = {
-            "Conversion Tools": {
-                "Raster to Point": "icons/toolbox.png",
-                "Raster to Polygon": "icons/toolbox.png",
-                "Vector to Raster": "icons/toolbox.png",
-                "Vector to GeoJSON": "icons/toolbox.png"
-            },
-            "Geoprocessing Tools": {
-                "Clip": "icons/toolbox.png",
-                "Buffer": "icons/toolbox.png",
-                "Dissolve": "icons/toolbox.png"
-            },
-            "Spatial Analysis Tools": {
-                "Spatial Join": "icons/toolbox.png",
-                "Intersect": "icons/toolbox.png",
-                "Union": "icons/toolbox.png"
-            },
-            "Projections": {
-                "Define Projection": "icons/toolbox.png",
-                "Reproject": "icons/toolbox.png"
-            }
-        }
-
-        # Populate the tree with categories and tools
-        for category, tools in categories.items():
-            category_item = QTreeWidgetItem([category])
-            category_item.setIcon(0, QIcon("icons/toolbox.png"))
-            for tool, icon_path in tools.items():
-                tool_item = QTreeWidgetItem([tool])
-                tool_item.setIcon(0, QIcon(icon_path))  # Set the icon for the tool
-                category_item.addChild(tool_item)
-            self.tool_tree.addTopLevelItem(category_item)
-
-        # Connect the selection event
-        self.tool_tree.itemClicked.connect(self.tool_selected)
-
-        layout.addWidget(self.tool_tree)
-        self.setLayout(layout)
-    
-    def tool_selected(self, item):
-        # Perform action based on tool selection
-        if item.parent():  # Ensure it's a tool (not a category)
-            selected_tool = item.text(0)
-            if selected_tool == "Raster to Point":
-                self.perform_raster_to_point()
-            elif selected_tool == "Raster to Point":
-                self.perform_shapefile_to_geojson()
-
-    def perform_raster_to_point(self):
-        raster_file, _ = QFileDialog.getOpenFileName(self, "Select Raster File", "", "TIF Files (*.tif)")
-        if raster_file:
-            input_raster_path = os.path.abspath(raster_file)
-            print("input path", input_raster_path)
-            directory = os.path.dirname(raster_file)
-            print("input dir", directory)
-            filename = os.path.basename(input_raster_path)
-            file_root, file_extension = os.path.splitext(filename) 
-            output_filename = file_root + "_points.shp"
-            output_path = os.path.join(directory, output_filename)
-            print("output", output_path)
-            
-            if output_path:
-                with rasterio.open(raster_file) as src:
-                    # Read the data from the first band
-                    band = src.read(1)
-
-                    # Get the affine transformation
-                    transform = src.transform
-
-                    default_crs="EPSG:4326"
-                    crs = src.crs if src.crs is not None else "EPSG:4326"
-                    # Get the row and column indices of the non-null pixels
-                    rows, cols = np.where(band != src.nodata)
-
-                    # Create a list to hold point geometries
-                    points = []
-                    values = []
-
-                    for r, c in zip(rows, cols):
-                        # Get the value of the pixel
-                        value = band[r, c]
-                        values.append(value)
-
-                        # Calculate the x, y coordinates
-                        x, y = transform * (c, r)
-                        points.append(Point(x, y))
-
-                    # Create a GeoDataFrame
-                    gdf = gpd.GeoDataFrame({'value': values, 'geometry': points}, crs=crs)
-
-                    # Save to a shapefile
-                    gdf.to_file(output_path, driver='ESRI Shapefile')
-
-                self.main_window.create_layer(file_path=output_path)
-                
-    
-    def perform_shapefile_to_geojson(shapefile_path, output_geojson_path):
-        try:
-            # Read the shapefile
-            gdf = gpd.read_file(shapefile_path)
-
-            # Convert to GeoJSON and save
-            gdf.to_file(output_geojson_path, driver='GeoJSON')
-
-            print(f"Shapefile {shapefile_path} successfully converted to GeoJSON: {output_geojson_path}")
-
-        except Exception as e:
-            print(f"Error converting shapefile to GeoJSON: {e}")
 
 if __name__ == "__main__":
     app = QApplication(sys.argv)
